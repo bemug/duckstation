@@ -213,7 +213,7 @@ static System::FrameTimeHistory s_frame_time_history;
 static u32 s_frame_time_history_pos = 0;
 static u32 s_last_frame_number = 0;
 static u32 s_last_internal_frame_number = 0;
-static u32 s_last_global_tick_counter = 0;
+static GlobalTicks s_last_global_tick_counter = 0;
 static u64 s_last_cpu_time = 0;
 static u64 s_last_sw_time = 0;
 static u32 s_presents_since_last_update = 0;
@@ -401,11 +401,6 @@ void System::UpdateOverclock()
   g_gpu->CPUClockChanged();
   Timers::CPUClocksChanged();
   UpdateThrottlePeriod();
-}
-
-u32 System::GetGlobalTickCounter()
-{
-  return TimingEvents::GetGlobalTickCounter() + CPU::GetPendingTicks();
 }
 
 u32 System::GetFrameNumber()
@@ -2611,7 +2606,7 @@ void System::UpdatePerformanceCounters()
 
   const u32 frames_run = s_frame_number - s_last_frame_number;
   const float frames_runf = static_cast<float>(frames_run);
-  const u32 global_tick_counter = GetGlobalTickCounter();
+  const GlobalTicks global_tick_counter = TimingEvents::GetGlobalTickCounter();
 
   // TODO: Make the math here less rubbish
   const double pct_divider =
@@ -2672,7 +2667,7 @@ void System::ResetPerformanceCounters()
 {
   s_last_frame_number = s_frame_number;
   s_last_internal_frame_number = s_internal_frame_number;
-  s_last_global_tick_counter = GetGlobalTickCounter();
+  s_last_global_tick_counter = TimingEvents::GetGlobalTickCounter();
   s_last_cpu_time = s_cpu_thread_handle ? s_cpu_thread_handle.GetCPUTime() : 0;
   if (const Threading::Thread* sw_thread = g_gpu->GetSWThread(); sw_thread)
     s_last_sw_time = sw_thread->GetCPUTime();

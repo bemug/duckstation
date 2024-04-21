@@ -20,7 +20,8 @@ enum class MemoryAccessSize : u32
   Word
 };
 
-using TickCount = s32;
+using TickCount = s32; // TODO: Make u32
+using GlobalTicks = u64;
 
 enum class ConsoleRegion
 {

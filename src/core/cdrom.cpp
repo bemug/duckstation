@@ -316,7 +316,7 @@ static ModeRegister s_mode = {};
 static u8 s_interrupt_enable_register = INTERRUPT_REGISTER_MASK;
 static u8 s_interrupt_flag_register = 0;
 static u8 s_pending_async_interrupt = 0;
-static u32 s_last_interrupt_time = 0;
+static GlobalTicks s_last_interrupt_time = 0;
 
 static CDImage::Position s_setloc_position = {};
 static CDImage::LBA s_requested_lba{};
@@ -324,7 +324,7 @@ static CDImage::LBA s_current_lba{}; // this is the hold position
 static CDImage::LBA s_seek_start_lba{};
 static CDImage::LBA s_seek_end_lba{};
 static CDImage::LBA s_physical_lba{}; // current position of the disc with respect to time
-static u32 s_physical_lba_update_tick = 0;
+static GlobalTicks s_physical_lba_update_tick = 0;
 static u32 s_physical_lba_update_carry = 0;
 static bool s_setloc_pending = false;
 static bool s_read_after_seek = false;
@@ -484,7 +484,7 @@ void CDROM::Reset()
   s_mode.read_raw_sector = true;
   s_interrupt_enable_register = INTERRUPT_REGISTER_MASK;
   s_interrupt_flag_register = 0;
-  s_last_interrupt_time = System::GetGlobalTickCounter() - MINIMUM_INTERRUPT_DELAY;
+  s_last_interrupt_time = TimingEvents::GetGlobalTickCounter() - MINIMUM_INTERRUPT_DELAY;
   ClearAsyncInterrupt();
   s_setloc_position = {};
   s_seek_start_lba = 0;
@@ -605,14 +605,14 @@ bool CDROM::DoState(StateWrapper& sw)
 
   sw.Do(&s_interrupt_enable_register);
   sw.Do(&s_interrupt_flag_register);
-  sw.DoEx(&s_last_interrupt_time, 57, System::GetGlobalTickCounter() - MINIMUM_INTERRUPT_DELAY);
+  //sw.DoEx(&s_last_interrupt_time, 57, TimingEvents::GetGlobalTickCounter() - MINIMUM_INTERRUPT_DELAY);// TODO: FIXME
   sw.Do(&s_pending_async_interrupt);
   sw.DoPOD(&s_setloc_position);
   sw.Do(&s_current_lba);
   sw.Do(&s_seek_start_lba);
   sw.Do(&s_seek_end_lba);
   sw.DoEx(&s_physical_lba, 49, s_current_lba);
-  sw.DoEx(&s_physical_lba_update_tick, 49, static_cast<u32>(0));
+  //sw.DoEx(&s_physical_lba_update_tick, 49, static_cast<u32>(0)); // TODO FIXME
   sw.DoEx(&s_physical_lba_update_carry, 54, static_cast<u32>(0));
   sw.Do(&s_setloc_pending);
   sw.Do(&s_read_after_seek);
@@ -1097,7 +1097,7 @@ bool CDROM::HasPendingAsyncInterrupt()
 void CDROM::SetInterrupt(Interrupt interrupt)
 {
   s_interrupt_flag_register = static_cast<u8>(interrupt);
-  s_last_interrupt_time = System::GetGlobalTickCounter();
+  s_last_interrupt_time = TimingEvents::GetGlobalTickCounter();
   UpdateInterruptRequest();
 }
 
@@ -1138,7 +1138,7 @@ void CDROM::QueueDeliverAsyncInterrupt()
     return;
 
   // underflows here are okay
-  const u32 diff = System::GetGlobalTickCounter() - s_last_interrupt_time;
+  const GlobalTicks diff = TimingEvents::GetGlobalTickCounter() - s_last_interrupt_time;
   if (diff >= MINIMUM_INTERRUPT_DELAY)
   {
     DeliverAsyncInterrupt(nullptr, 0, 0);
@@ -2442,13 +2442,13 @@ void CDROM::UpdatePositionWhileSeeking()
 
   s_current_lba = current_lba;
   s_physical_lba = current_lba;
-  s_physical_lba_update_tick = System::GetGlobalTickCounter();
+  s_physical_lba_update_tick = TimingEvents::GetGlobalTickCounter();
   s_physical_lba_update_carry = 0;
 }
 
 void CDROM::UpdatePhysicalPosition(bool update_logical)
 {
-  const u32 ticks = System::GetGlobalTickCounter();
+  const u32 ticks = TimingEvents::GetGlobalTickCounter();
   if (IsSeeking() || IsReadingOrPlaying() || !IsMotorOn())
   {
     // If we're seeking+reading the first sector (no stat bits set), we need to return the set/current lba, not the last
@@ -2539,7 +2539,7 @@ void CDROM::SetHoldPosition(CDImage::LBA lba, bool update_subq)
 
   s_current_lba = lba;
   s_physical_lba = lba;
-  s_physical_lba_update_tick = System::GetGlobalTickCounter();
+  s_physical_lba_update_tick = TimingEvents::GetGlobalTickCounter();
   s_physical_lba_update_carry = 0;
 }
 
@@ -2607,7 +2607,7 @@ bool CDROM::CompleteSeek()
   }
 
   s_physical_lba = s_current_lba;
-  s_physical_lba_update_tick = System::GetGlobalTickCounter();
+  s_physical_lba_update_tick = TimingEvents::GetGlobalTickCounter();
   s_physical_lba_update_carry = 0;
   return seek_okay;
 }
@@ -2783,7 +2783,7 @@ void CDROM::DoSectorRead()
 
   s_current_lba = s_reader.GetLastReadSector();
   s_physical_lba = s_current_lba;
-  s_physical_lba_update_tick = System::GetGlobalTickCounter();
+  s_physical_lba_update_tick = TimingEvents::GetGlobalTickCounter();
   s_physical_lba_update_carry = 0;
 
   s_secondary_status.SetReadingBits(s_drive_state == DriveState::Playing);

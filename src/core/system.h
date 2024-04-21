@@ -195,7 +195,6 @@ void UpdateOverclock();
 /// direct execution to this executable.
 bool InjectEXEFromBuffer(const void* buffer, u32 buffer_size, bool patch_loader = true);
 
-u32 GetGlobalTickCounter();
 u32 GetFrameNumber();
 u32 GetInternalFrameNumber();
 void IncrementInternalFrameNumber();

@@ -11,8 +11,36 @@
 
 class StateWrapper;
 
+class TimingEvent;
+
 // Event callback type. Second parameter is the number of cycles the event was executed "late".
 using TimingEventCallback = void (*)(void* param, TickCount ticks, TickCount ticks_late);
+
+namespace TimingEvents {
+
+GlobalTicks GetGlobalTickCounter();
+GlobalTicks GetEventRunTickCounter();
+
+void Initialize();
+void Reset();
+void Shutdown();
+
+/// Creates a new event.
+std::unique_ptr<TimingEvent> CreateTimingEvent(std::string name, TickCount period, TickCount interval,
+                                               TimingEventCallback callback, void* callback_param, bool activate);
+
+/// Serialization.
+bool DoState(StateWrapper& sw);
+
+bool IsRunningEvents();
+void SetFrameDone();
+void RunEvents();
+
+void UpdateCPUDowncount();
+
+TimingEvent** GetHeadEventPtr();
+
+} // namespace TimingEvents
 
 class TimingEvent
 {
@@ -27,11 +55,18 @@ public:
   // Returns the number of ticks between each event.
   ALWAYS_INLINE TickCount GetPeriod() const { return m_period; }
   ALWAYS_INLINE TickCount GetInterval() const { return m_interval; }
-  ALWAYS_INLINE TickCount GetDowncount() const { return m_downcount; }
+  ALWAYS_INLINE GlobalTicks GetNextRunTime() const { return m_next_run_time; }
+  ALWAYS_INLINE GlobalTicks GetLastRunTime() const { return m_last_run_time; }
 
   // Includes pending time.
-  TickCount GetTicksSinceLastExecution() const;
-  TickCount GetTicksUntilNextExecution() const;
+  ALWAYS_INLINE TickCount GetTicksSinceLastExecution() const
+  {
+    return static_cast<TickCount>(TimingEvents::GetGlobalTickCounter() - m_last_run_time);
+  }
+  ALWAYS_INLINE TickCount GetTicksUntilNextExecution() const
+  {
+    return static_cast<TickCount>(m_next_run_time - TimingEvents::GetGlobalTickCounter());
+  }
 
   // Adds ticks to current execution.
   void Delay(TickCount ticks);
@@ -69,37 +104,11 @@ public:
   TimingEventCallback m_callback;
   void* m_callback_param;
 
-  TickCount m_downcount;
-  TickCount m_time_since_last_run;
+  GlobalTicks m_next_run_time;
+  GlobalTicks m_last_run_time;
   TickCount m_period;
   TickCount m_interval;
   bool m_active = false;
 
   std::string m_name;
 };
-
-namespace TimingEvents {
-
-u32 GetGlobalTickCounter();
-u32 GetEventRunTickCounter();
-
-void Initialize();
-void Reset();
-void Shutdown();
-
-/// Creates a new event.
-std::unique_ptr<TimingEvent> CreateTimingEvent(std::string name, TickCount period, TickCount interval,
-                                               TimingEventCallback callback, void* callback_param, bool activate);
-
-/// Serialization.
-bool DoState(StateWrapper& sw);
-
-bool IsRunningEvents();
-void SetFrameDone();
-void RunEvents();
-
-void UpdateCPUDowncount();
-
-TimingEvent** GetHeadEventPtr();
-
-} // namespace TimingEvents

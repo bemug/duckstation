@@ -16,16 +16,16 @@ static TimingEvent* s_active_events_head;
 static TimingEvent* s_active_events_tail;
 static TimingEvent* s_current_event = nullptr;
 static u32 s_active_event_count = 0;
-static u32 s_global_tick_counter = 0;
-static u32 s_event_run_tick_counter = 0;
+static GlobalTicks s_global_tick_counter = 0;
+static GlobalTicks s_event_run_tick_counter = 0;
 static bool s_frame_done = false;
 
-u32 GetGlobalTickCounter()
+GlobalTicks GetGlobalTickCounter()
 {
-  return s_global_tick_counter;
+  return s_global_tick_counter + CPU::GetPendingTicks();
 }
 
-u32 GetEventRunTickCounter()
+GlobalTicks GetEventRunTickCounter()
 {
   return s_event_run_tick_counter;
 }
@@ -38,6 +38,7 @@ void Initialize()
 void Reset()
 {
   s_global_tick_counter = 0;
+  s_event_run_tick_counter = 0;
 }
 
 void Shutdown()
@@ -58,7 +59,8 @@ std::unique_ptr<TimingEvent> CreateTimingEvent(std::string name, TickCount perio
 
 void UpdateCPUDowncount()
 {
-  const u32 event_downcount = s_active_events_head->GetDowncount();
+  DebugAssert(s_active_events_head->GetNextRunTime() >= s_global_tick_counter);
+  const u32 event_downcount = static_cast<u32>(s_active_events_head->GetNextRunTime() - s_global_tick_counter);
   CPU::g_state.downcount = CPU::HasPendingInterrupt() ? 0 : event_downcount;
 }
 
@@ -69,13 +71,13 @@ TimingEvent** GetHeadEventPtr()
 
 static void SortEvent(TimingEvent* event)
 {
-  const TickCount event_downcount = event->m_downcount;
+  const GlobalTicks event_runtime = event->GetNextRunTime();
 
-  if (event->prev && event->prev->m_downcount > event_downcount)
+  if (event->prev && event->prev->GetNextRunTime() > event_runtime)
   {
     // move backwards
     TimingEvent* current = event->prev;
-    while (current && current->m_downcount > event_downcount)
+    while (current && current->GetNextRunTime() > event_runtime)
       current = current->prev;
 
     // unlink
@@ -111,11 +113,11 @@ static void SortEvent(TimingEvent* event)
       UpdateCPUDowncount();
     }
   }
-  else if (event->next && event_downcount > event->next->m_downcount)
+  else if (event->next && event_runtime > event->next->GetNextRunTime())
   {
     // move forwards
     TimingEvent* current = event->next;
-    while (current && event_downcount > current->m_downcount)
+    while (current && event_runtime > current->GetNextRunTime())
       current = current->next;
 
     // unlink
@@ -168,9 +170,10 @@ static void AddActiveEvent(TimingEvent* event)
   DebugAssert(!event->prev && !event->next);
   s_active_event_count++;
 
+  const GlobalTicks event_runtime = event->GetNextRunTime();
   TimingEvent* current = nullptr;
   TimingEvent* next = s_active_events_head;
-  while (next && event->m_downcount > next->m_downcount)
+  while (next && event_runtime > next->GetNextRunTime())
   {
     current = next;
     next = next->next;
@@ -231,7 +234,7 @@ static void RemoveActiveEvent(TimingEvent* event)
   else
   {
     s_active_events_head = event->next;
-    if (s_active_events_head)
+    if (s_active_events_head && !s_current_event)
       UpdateCPUDowncount();
   }
 
@@ -295,45 +298,37 @@ void RunEvents()
     if (CPU::HasPendingInterrupt())
       CPU::DispatchInterrupt();
 
-    TickCount pending_ticks = CPU::GetPendingTicks();
-    if (pending_ticks >= s_active_events_head->GetDowncount())
+    // TODO: Get rid of pending completely...
+    const GlobalTicks new_global_ticks = s_global_tick_counter + static_cast<GlobalTicks>(CPU::GetPendingTicks());
+    if (new_global_ticks >= s_active_events_head->m_next_run_time)
     {
       CPU::ResetPendingTicks();
-      s_event_run_tick_counter = s_global_tick_counter + static_cast<u32>(pending_ticks);
+      s_event_run_tick_counter = new_global_ticks; // TODO: Might be wrong... should move below?but then it'd ping-pong.
 
       do
       {
-        const TickCount time = std::min(pending_ticks, s_active_events_head->GetDowncount());
-        s_global_tick_counter += static_cast<u32>(time);
-        pending_ticks -= time;
-
-        // Apply downcount to all events.
-        // This will result in a negative downcount for those events which are late.
-        for (TimingEvent* event = s_active_events_head; event; event = event->next)
-        {
-          event->m_downcount -= time;
-          event->m_time_since_last_run += time;
-        }
+        s_global_tick_counter = std::min(new_global_ticks, s_active_events_head->m_next_run_time);
 
         // Now we can actually run the callbacks.
-        while (s_active_events_head->m_downcount <= 0)
+        TimingEvent* event;
+        while (s_global_tick_counter >= (event = s_active_events_head)->m_next_run_time)
         {
-          // move it to the end, since that'll likely be its new position
-          TimingEvent* event = s_active_events_head;
           s_current_event = event;
 
           // Factor late time into the time for the next invocation.
-          const TickCount ticks_late = -event->m_downcount;
-          const TickCount ticks_to_execute = event->m_time_since_last_run;
-          event->m_downcount += event->m_interval;
-          event->m_time_since_last_run = 0;
+          const TickCount ticks_late =
+            static_cast<TickCount>(s_global_tick_counter - s_active_events_head->m_next_run_time);
+          const TickCount ticks_to_execute =
+            static_cast<TickCount>(s_global_tick_counter - s_active_events_head->m_last_run_time);
+          s_active_events_head->m_next_run_time += static_cast<GlobalTicks>(event->m_interval);
+          s_active_events_head->m_last_run_time = s_global_tick_counter;
 
           // The cycles_late is only an indicator, it doesn't modify the cycles to execute.
           event->m_callback(event->m_callback_param, ticks_to_execute, ticks_late);
           if (event->m_active)
             SortEvent(event);
         }
-      } while (pending_ticks > 0);
+      } while (new_global_ticks > s_event_run_tick_counter);
 
       s_current_event = nullptr;
     }
@@ -379,8 +374,9 @@ bool DoState(StateWrapper& sw)
       }
 
       // Using reschedule is safe here since we call sort afterwards.
-      event->m_downcount = downcount;
-      event->m_time_since_last_run = time_since_last_run;
+      Panic("Fixme");
+      //event->m_downcount = downcount;
+      //event->m_time_since_last_run = time_since_last_run;
       event->m_period = period;
       event->m_interval = interval;
     }
@@ -402,8 +398,8 @@ bool DoState(StateWrapper& sw)
     for (TimingEvent* event = s_active_events_head; event; event = event->next)
     {
       sw.Do(&event->m_name);
-      sw.Do(&event->m_downcount);
-      sw.Do(&event->m_time_since_last_run);
+      //sw.Do(&event->m_downcount);
+      //sw.Do(&event->m_time_since_last_run);
       sw.Do(&event->m_period);
       sw.Do(&event->m_interval);
     }
@@ -418,7 +414,7 @@ bool DoState(StateWrapper& sw)
 
 TimingEvent::TimingEvent(std::string name, TickCount period, TickCount interval, TimingEventCallback callback,
                          void* callback_param)
-  : m_callback(callback), m_callback_param(callback_param), m_downcount(interval), m_time_since_last_run(0),
+  : m_callback(callback), m_callback_param(callback_param), m_next_run_time(TimingEvents::GetGlobalTickCounter() + static_cast<GlobalTicks>(interval)), m_last_run_time(TimingEvents::GetGlobalTickCounter()),
     m_period(period), m_interval(interval), m_name(std::move(name))
 {
 }
@@ -429,16 +425,6 @@ TimingEvent::~TimingEvent()
     TimingEvents::RemoveActiveEvent(this);
 }
 
-TickCount TimingEvent::GetTicksSinceLastExecution() const
-{
-  return CPU::GetPendingTicks() + m_time_since_last_run;
-}
-
-TickCount TimingEvent::GetTicksUntilNextExecution() const
-{
-  return std::max(m_downcount - CPU::GetPendingTicks(), static_cast<TickCount>(0));
-}
-
 void TimingEvent::Delay(TickCount ticks)
 {
   if (!m_active)
@@ -447,7 +433,7 @@ void TimingEvent::Delay(TickCount ticks)
     return;
   }
 
-  m_downcount += ticks;
+  m_next_run_time += static_cast<GlobalTicks>(ticks);
 
   DebugAssert(TimingEvents::s_current_event != this);
   TimingEvents::SortEvent(this);
@@ -457,13 +443,13 @@ void TimingEvent::Delay(TickCount ticks)
 
 void TimingEvent::Schedule(TickCount ticks)
 {
-  const TickCount pending_ticks = CPU::GetPendingTicks();
-  m_downcount = pending_ticks + ticks;
+  const GlobalTicks current_ticks = TimingEvents::GetGlobalTickCounter();
+  m_next_run_time = current_ticks + static_cast<GlobalTicks>(ticks);
 
   if (!m_active)
   {
     // Event is going active, so we want it to only execute ticks from the current timestamp.
-    m_time_since_last_run = -pending_ticks;
+    m_last_run_time = current_ticks;
     m_active = true;
     TimingEvents::AddActiveEvent(this);
   }
@@ -498,8 +484,9 @@ void TimingEvent::Reset()
   if (!m_active)
     return;
 
-  m_downcount = m_interval;
-  m_time_since_last_run = 0;
+  const GlobalTicks current_ticks = TimingEvents::GetGlobalTickCounter();
+  m_next_run_time = current_ticks + static_cast<GlobalTicks>(m_interval);
+  m_last_run_time = current_ticks;
   if (TimingEvents::s_current_event != this)
   {
     TimingEvents::SortEvent(this);
@@ -513,13 +500,15 @@ void TimingEvent::InvokeEarly(bool force /* = false */)
   if (!m_active)
     return;
 
-  const TickCount pending_ticks = CPU::GetPendingTicks();
-  const TickCount ticks_to_execute = m_time_since_last_run + pending_ticks;
+  const GlobalTicks current_ticks = TimingEvents::GetGlobalTickCounter();
+  DebugAssert(current_ticks >= m_last_run_time);
+
+  const TickCount ticks_to_execute = static_cast<TickCount>(current_ticks - m_last_run_time);
   if ((!force && ticks_to_execute < m_period) || ticks_to_execute <= 0)
     return;
 
-  m_downcount = pending_ticks + m_interval;
-  m_time_since_last_run -= ticks_to_execute;
+  m_next_run_time = current_ticks + static_cast<GlobalTicks>(m_interval);
+  m_last_run_time = current_ticks;
   m_callback(m_callback_param, ticks_to_execute, 0);
 
   // Since we've changed the downcount, we need to re-sort the events.
@@ -534,10 +523,9 @@ void TimingEvent::Activate()
   if (m_active)
     return;
 
-  // leave the downcount intact
-  const TickCount pending_ticks = CPU::GetPendingTicks();
-  m_downcount += pending_ticks;
-  m_time_since_last_run -= pending_ticks;
+  const GlobalTicks current_ticks = TimingEvents::GetGlobalTickCounter();
+  m_next_run_time = current_ticks + static_cast<GlobalTicks>(m_interval);
+  m_last_run_time = current_ticks;
 
   m_active = true;
   TimingEvents::AddActiveEvent(this);
@@ -547,10 +535,6 @@ void TimingEvent::Deactivate()
 {
   if (!m_active)
     return;
-
-  const TickCount pending_ticks = CPU::GetPendingTicks();
-  m_downcount -= pending_ticks;
-  m_time_since_last_run += pending_ticks;
 
   m_active = false;
   TimingEvents::RemoveActiveEvent(this);
