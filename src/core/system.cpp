@@ -79,6 +79,11 @@ Log_SetChannel(System);
 #include "discord_rpc.h"
 #endif
 
+#ifndef __ANDROID__
+#define ENABLE_PINE_SERVER 1
+#include "pine_server.h"
+#endif
+
 // #define PROFILE_MEMORY_SAVE_STATES 1
 
 SystemBootParameters::SystemBootParameters() = default;
@@ -339,11 +344,20 @@ bool System::Internal::CPUThreadInitialize(Error* error)
     InitializeDiscordPresence();
 #endif
 
+#ifdef ENABLE_PINE_SERVER
+  if (g_settings.pine_enable)
+    PINEServer::Initialize(g_settings.pine_slot);
+#endif
+
   return true;
 }
 
 void System::Internal::CPUThreadShutdown()
 {
+#ifdef ENABLE_PINE_SERVER
+  PINEServer::Deinitialize();
+#endif
+
 #ifdef ENABLE_DISCORD_PRESENCE
   ShutdownDiscordPresence();
 #endif
@@ -369,6 +383,10 @@ void System::Internal::IdlePollUpdate()
 #endif
 
   Achievements::IdleUpdate();
+
+#ifdef ENABLE_PINE_SERVER
+  PINEServer::Poll();
+#endif
 }
 
 System::State System::GetState()
@@ -1920,8 +1938,13 @@ void System::FrameDone()
   if (Achievements::IsActive())
     Achievements::FrameUpdate();
 
+
 #ifdef ENABLE_DISCORD_PRESENCE
   PollDiscordPresence();
+#endif
+
+#ifdef ENABLE_PINE_SERVER
+  PINEServer::Poll();
 #endif
 
   Host::FrameDone();
@@ -4086,6 +4109,15 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
       InitializeDiscordPresence();
     else
       ShutdownDiscordPresence();
+  }
+#endif
+
+#ifndef ENABLE_PINE_SERVER
+  if (g_settings.pine_enable != old_settings.pine_enable || g_settings.pine_slot != old_settings.pine_slot)
+  {
+    PINEServer::Deinitialize();
+    if (g_settings.pine_enable)
+      PINEServer::Initialize(g_settings.pine_slot);
   }
 #endif
 
